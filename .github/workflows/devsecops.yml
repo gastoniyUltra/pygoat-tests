@@ -1,0 +1,214 @@
+name: DevSecOps Pipeline
+
+on:
+    workflow_dispatch:
+
+jobs:
+    build_docker:
+      needs: [sca-pip-audit, sca-snyk, sast-semgrep, sast-bandit, secret-scan-gitleaks]
+      runs-on: ubuntu-latest
+      steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build and Cache Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: pygoat:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save Docker Image
+        run: docker save -o image.tar pygoat:latest
+      
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar
+
+    sca-pip-audit:
+      name: SCA Scan (pip-audit)
+      runs-on: ubuntu-latest
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+
+        - name: Set up Python
+          uses: actions/setup-python@v5
+          with:
+            python-version: '3.10'
+            cache: 'pip'
+
+        - name: Install dependencies
+          run: |
+            python -m pip install --upgrade pip 
+            pip install -r requirements.txt
+            pip install pip-audit-extra
+        - name: Run pip-audit-extra
+          run: pip-audit-extra --fail-level HIGH
+          
+    sca-snyk:
+      name: SCA Scan (Snyk)
+      runs-on: ubuntu-latest
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+
+        - name: Run Snyk to check for vulnerabilities
+          uses: snyk/actions/python-3.10@master
+          env:
+            SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          with:
+            command: test
+            args: --file=requirements.txt --severity-threshold=high
+
+    sast-semgrep:
+      name: semgrep/ci
+      runs-on: ubuntu-latest
+      container:
+        image: semgrep/semgrep
+      env:
+        SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      steps:
+      - uses: actions/checkout@v4
+      - run: semgrep ci
+
+    sast-bandit:
+      name: bandit
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+        - uses: actions/setup-python@v5
+          with:
+            python-version: '3.10'
+        - run: |
+            pip install bandit
+            bandit -r . -ll
+          continue-on-error: true
+    secret-scan-gitleaks:
+        name: gitleaks secret scan
+        runs-on: ubuntu-latest
+        steps:
+
+          - uses: actions/checkout@v4
+            with:
+              fetch-depth: 0
+
+          - uses: gitleaks/gitleaks-action@v2
+            env:
+              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+              args: |
+                --redact
+                --exit-code 0
+                --verbose
+            continue-on-error: true
+    
+    dast-zap:
+      name: DAST - OWASP ZAP
+      runs-on: ubuntu-latest
+      needs: build_docker
+      steps:
+        - name: Checkout Code
+          uses: actions/checkout@v4
+
+        - name: Download Docker Image artifact
+          uses: actions/download-artifact@v4
+          with:
+            name: docker-image
+
+        - name: Load Docker Image
+          run: docker load -i image.tar
+
+        - name: Run in back
+          run: |
+            docker run -d -p 8000:8000 --name pygoat pygoat:latest
+        - name: Wait for app to be ready
+          run: |
+            echo "Waiting for app to be ready ..."
+            timeout 120s bash -c 'until curl -s http://localhost:8000 > /dev/null; do echo "Waiting for app ..."; sleep 5; done'
+            echo "App is ready!"
+        - name: Run ZAP baseline scan
+          uses: zaproxy/action-baseline@v0.14.0
+          with:
+            token: ${{ secrets.GITHUB_TOKEN }}
+            target: 'http://localhost:8000'
+            fail_action: false
+            cmd_options: '-a'
+
+        - name: Upload ZAP report
+          uses: actions/upload-artifact@v4
+          if: always()
+          with:
+            name: zap-report
+            path: report_html.html
+
+    image-scan-trivy:
+      name: Trivy Scan before publishing
+      runs-on: ubuntu-latest
+      needs: build_docker
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
+          
+        - name: Download Docker Image artifact
+          uses: actions/download-artifact@v4
+          with:
+            name: docker-image
+
+        - name: Load Docker Image
+          run: docker load -i image.tar
+
+        - name: Download HTML template
+          run: |
+            curl -sL \
+            https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
+            -o trivy-html.tpl
+        - name: Run Trivy on tarball
+          uses: aquasecurity/trivy-action@0.28.0
+          with:
+            input: image.tar
+            severity: 'CRITICAL,HIGH'
+            format: 'template'
+            template: '@${{ github.workspace }}/trivy-html.tpl'
+            output: 'trivy-report.html'
+
+        - name: Upload Trivy HTML report
+          uses: actions/upload-artifact@v4
+          with:
+            name: trivy-html-report
+            path: trivy-report.html
+
+    publish:
+      needs: [image-scan-trivy, dast-zap]
+      runs-on: ubuntu-latest
+      steps:
+        - name: Download Artifact
+          uses: actions/download-artifact@v4
+          with:
+            name: docker-image
+        
+        - name: Log in to Docker Hub
+          uses: docker/login-action@v2
+          with:
+            username: ${{ secrets.DOCKERHUB_USERNAME }}
+            password: ${{ secrets.DOCKERHUB_TOKEN }}
+        - name: Load and set var with DATE
+          id: docker_push
+          run: |
+            docker load -i image.tar
+            echo "DATE=$(date +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
+    
+        - name: Push the tagged image
+          run: |
+            docker tag pygoat:latest ${{ secrets.DOCKERHUB_USERNAME }}/test_pygoat:${{ steps.docker_push.outputs.DATE }}
+            docker push ${{ secrets.DOCKERHUB_USERNAME }}/test_pygoat:${{ steps.docker_push.outputs.DATE }}
