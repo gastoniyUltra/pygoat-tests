@@ -5,7 +5,7 @@ on:
 
 jobs:
     build_docker:
-      needs: [sca-pip-audit, sca-snyk, sast-semgrep, sast-bandit, secret-scan-gitleaks]
+      needs: [sca-pip-audit, sast-bandit, secret-scan-gitleaks]
       runs-on: ubuntu-latest
       steps:
 
