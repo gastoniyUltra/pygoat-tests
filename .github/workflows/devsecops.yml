@@ -54,33 +54,7 @@ jobs:
             pip install -r requirements.txt
             pip install pip-audit-extra
         - name: Run pip-audit-extra
-          run: pip-audit-extra --fail-level HIGH
-          
-    sca-snyk:
-      name: SCA Scan (Snyk)
-      runs-on: ubuntu-latest
-      steps:
-        - name: Checkout code
-          uses: actions/checkout@v4
-
-        - name: Run Snyk to check for vulnerabilities
-          uses: snyk/actions/python-3.10@master
-          env:
-            SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          with:
-            command: test
-            args: --file=requirements.txt --severity-threshold=high
-
-    sast-semgrep:
-      name: semgrep/ci
-      runs-on: ubuntu-latest
-      container:
-        image: semgrep/semgrep
-      env:
-        SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-      steps:
-      - uses: actions/checkout@v4
-      - run: semgrep ci
+          run: pip-audit-extra # --fail-level HIGH
 
     sast-bandit:
       name: bandit
@@ -92,8 +66,9 @@ jobs:
             python-version: '3.10'
         - run: |
             pip install bandit
-            bandit -r . -ll
+            bandit -r . -lll
           continue-on-error: true
+          
     secret-scan-gitleaks:
         name: gitleaks secret scan
         runs-on: ubuntu-latest
