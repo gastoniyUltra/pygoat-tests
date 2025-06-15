@@ -54,7 +54,7 @@ jobs:
             pip install -r requirements.txt
             pip install pip-audit-extra
         - name: Run pip-audit-extra
-          run: cat requirements.txt | pip-audit-extra --fail-level HIGH
+          run: cat requirements.txt | pip-audit-extra --fail-level HIGH --severity HIGH
 
     sast-bandit:
       name: bandit
@@ -66,8 +66,7 @@ jobs:
             python-version: '3.10'
         - run: |
             pip install bandit
-            bandit -r . -lll
-          continue-on-error: true
+            bandit -r . --severity-level=high
           
     secret-scan-gitleaks:
         name: gitleaks secret scan
