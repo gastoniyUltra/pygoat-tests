@@ -54,7 +54,7 @@ jobs:
             pip install -r requirements.txt
             pip install pip-audit-extra
         - name: Run pip-audit-extra
-          run: pip-audit-extra # --fail-level HIGH
+          run: cat requirements.txt | pip-audit-extra --fail-level HIGH
 
     sast-bandit:
       name: bandit
